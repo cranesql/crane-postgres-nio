@@ -1,0 +1,107 @@
+name: Unit Test
+on:
+  workflow_call:
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-unit-test
+  cancel-in-progress: true
+jobs:
+  linux-build:
+    name: Linux ${{ matrix.os_version }} (Swift ${{ matrix.swift_version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        swift_version: ["6.2", "nightly-main"]
+        os_version: ["jammy"]
+    container:
+      image: ${{ (contains(matrix.swift_version, 'nightly') && 'swiftlang/swift') || 'swift' }}:${{ matrix.swift_version }}-${{ matrix.os_version }}
+    steps:
+      - name: Swift version
+        run: swift --version
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Build / Test
+        run: swift test --parallel --enable-code-coverage --xunit-output junit.xml
+      - name: Merge code coverage
+        run: |
+          llvm-cov export -format "lcov" \
+            .build/debug/crane-postgres-nioPackageTests.xctest \
+            -ignore-filename-regex="\/Tests\/" \
+            -ignore-filename-regex="\/.build\/" \
+            -instr-profile=./.build/debug/codecov/default.profdata \
+          > info.lcov
+      - name: Install curl
+        run: |
+          if ! command -v curl > /dev/null; then
+            apt-get update
+            apt-get install -y curl
+          fi
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5.5.2
+        with:
+          report_type: test_results
+          files: ./junit.xml,./junit-swift-testing.xml
+          disable_search: true
+          fail_ci_if_error: true
+          flags: linux-${{ matrix.os_version }},swift-${{ matrix.swift_version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload code coverage report to Codecov
+        uses: codecov/codecov-action@v5.5.2
+        with:
+          files: ./info.lcov
+          disable_search: true
+          fail_ci_if_error: true
+          flags: unit
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  macos-build:
+    name: macOS ${{ matrix.os_version }} (Swift ${{ matrix.swift_version }})
+    runs-on: macos-${{ matrix.os_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os_version: ["26"]
+        swift_version: ["6.2", "main-snapshot"]
+    steps:
+      - name: Install Swift
+        working-directory: ${{ runner.temp }}
+        run: |
+          brew install swiftly
+          swiftly init --verbose --assume-yes --skip-install
+          swiftly install --verbose --assume-yes --use ${{ matrix.swift_version }}
+          echo "$HOME/.swiftly/bin" >> $GITHUB_PATH
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Print Swift Version
+        run: swift --version
+      - name: Build / Test
+        run: swift test --parallel --enable-code-coverage --xunit-output junit.xml
+      - name: Merge code coverage
+        run: |
+          xcrun llvm-cov export -format "lcov" \
+            .build/debug/crane-postgres-nioPackageTests.xctest/Contents/MacOS/crane-postgres-nioPackageTests \
+            -ignore-filename-regex="\/Tests\/" \
+            -ignore-filename-regex="\/.build\/" \
+            -instr-profile=./.build/debug/codecov/default.profdata \
+          > info.lcov
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5.5.2
+        with:
+          report_type: test_results
+          files: ./junit.xml,./junit-swift-testing.xml
+          disable_search: true
+          fail_ci_if_error: true
+          flags: macos-${{ matrix.os_version }},swift-${{ matrix.swift_version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload code coverage report to Codecov
+        uses: codecov/codecov-action@v5.5.2
+        with:
+          files: ./info.lcov
+          disable_search: true
+          fail_ci_if_error: true
+          flags: unit
+          token: ${{ secrets.CODECOV_TOKEN }}

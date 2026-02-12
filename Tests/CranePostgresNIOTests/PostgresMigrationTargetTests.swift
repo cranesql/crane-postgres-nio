@@ -10,3 +10,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 //===----------------------------------------------------------------------===//
+
+import Testing
+
+@Suite struct `Postgres Migration Target` {
+    @Test func `Example`() {
+        #expect(true != false, "🤯")
+    }
+}
