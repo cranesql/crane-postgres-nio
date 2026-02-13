@@ -1,10 +1,18 @@
-// swift-tools-version:6.1
+// swift-tools-version:6.2
 import PackageDescription
+
+let sharedSwiftSettings: [SwiftSetting] = [
+    .enableUpcomingFeature("InternalImportsByDefault"),
+    .enableUpcomingFeature("ExistentialAny"),
+]
 
 let package = Package(
     name: "crane-postgres-nio",
     platforms: [
-        .macOS(.v10_15)
+        .iOS(.v16),
+        .macOS(.v13),
+        .watchOS(.v9),
+        .tvOS(.v16),
     ],
     products: [
         .library(name: "CranePostgresNIO", targets: ["CranePostgresNIO"])
@@ -19,8 +27,15 @@ let package = Package(
             dependencies: [
                 .product(name: "Crane", package: "crane"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
-            ]
-        )
-    ],
-    swiftLanguageModes: [.v6]
+            ],
+            swiftSettings: sharedSwiftSettings
+        ),
+        .testTarget(
+            name: "CranePostgresNIOTests",
+            dependencies: [
+                .target(name: "CranePostgresNIO")
+            ],
+            swiftSettings: sharedSwiftSettings
+        ),
+    ]
 )
