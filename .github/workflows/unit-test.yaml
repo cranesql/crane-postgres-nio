@@ -80,6 +80,11 @@ jobs:
       fail-fast: false
       matrix:
         os_version: ["26"]
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: crane
+      POSTGRES_PASSWORD: crane
     steps:
       - name: Swift version
         id: swift-version
@@ -88,6 +93,13 @@ jobs:
           echo "version=$(swift --version | head -n 1 | sed 's/Swift version \([0-9.]*\).*/\1/')" >> $GITHUB_OUTPUT
       - name: Clang version
         run: clang --version
+      - name: Start PostgreSQL
+        run: |
+          brew install postgresql@17
+          brew services start postgresql@17
+          until pg_isready --host=localhost --port=5432; do sleep 1; done
+          createuser --superuser crane
+          createdb -U crane crane
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Build / Test
