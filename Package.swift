@@ -33,7 +33,11 @@ let package = Package(
         .testTarget(
             name: "CranePostgresNIOTests",
             dependencies: [
-                .target(name: "CranePostgresNIO")
+                .target(name: "CranePostgresNIO"),
+                .product(name: "PostgresNIO", package: "postgres-nio"),
+            ],
+            resources: [
+                .copy("Fixtures")
             ],
             swiftSettings: sharedSwiftSettings
         ),

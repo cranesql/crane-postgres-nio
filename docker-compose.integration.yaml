@@ -1,0 +1,9 @@
+name: crane-postgres-nio-integration-tests
+services:
+  postgres:
+    image: postgres:latest
+    environment:
+      - POSTGRES_USER=integration
+      - POSTGRES_PASSWORD=integration
+    ports:
+      - 5432:5432

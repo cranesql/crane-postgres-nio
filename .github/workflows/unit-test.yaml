@@ -13,10 +13,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift_version: ["6.2", "nightly-main"]
+        swift_version: ["6.2", "6.3", "nightly-main"]
         os_version: ["jammy"]
     container:
       image: ${{ (contains(matrix.swift_version, 'nightly') && 'swiftlang/swift') || 'swift' }}:${{ matrix.swift_version }}-${{ matrix.os_version }}
+    services:
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_USER: crane
+          POSTGRES_PASSWORD: crane
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: crane
+      POSTGRES_PASSWORD: crane
     steps:
       - name: Swift version
         run: swift --version
@@ -58,25 +74,22 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   macos-build:
-    name: macOS ${{ matrix.os_version }} (Swift ${{ matrix.swift_version }})
+    name: macOS ${{ matrix.os_version }}
     runs-on: macos-${{ matrix.os_version }}
     strategy:
       fail-fast: false
       matrix:
         os_version: ["26"]
-        swift_version: ["6.2", "main-snapshot"]
     steps:
-      - name: Install Swift
-        working-directory: ${{ runner.temp }}
+      - name: Swift version
+        id: swift-version
         run: |
-          brew install swiftly
-          swiftly init --verbose --assume-yes --skip-install
-          swiftly install --verbose --assume-yes --use ${{ matrix.swift_version }}
-          echo "$HOME/.swiftly/bin" >> $GITHUB_PATH
+          swift --version
+          echo "version=$(swift --version | head -n 1 | sed 's/Swift version \([0-9.]*\).*/\1/')" >> $GITHUB_OUTPUT
+      - name: Clang version
+        run: clang --version
       - name: Checkout repository
         uses: actions/checkout@v6
-      - name: Print Swift Version
-        run: swift --version
       - name: Build / Test
         run: swift test --parallel --enable-code-coverage --xunit-output junit.xml
       - name: Merge code coverage
@@ -89,16 +102,15 @@ jobs:
           > info.lcov
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5.5.2
+        uses: codecov/test-results-action@v1
         with:
-          report_type: test_results
           files: ./junit.xml,./junit-swift-testing.xml
           disable_search: true
           fail_ci_if_error: true
-          flags: macos-${{ matrix.os_version }},swift-${{ matrix.swift_version }}
+          flags: macos-${{ matrix.os_version }},swift-${{ steps.swift-version.outputs.version }}
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload code coverage report to Codecov
-        uses: codecov/codecov-action@v5.5.2
+        uses: codecov/codecov-action@v6.0.0
         with:
           files: ./info.lcov
           disable_search: true
