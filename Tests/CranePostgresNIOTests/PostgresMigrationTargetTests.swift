@@ -17,6 +17,10 @@ import Foundation
 import PostgresNIO
 import Testing
 
+#if Configuration
+import Configuration
+#endif
+
 @Suite struct `Postgres Migration Target` {
     @Suite(.disabledWithoutPostgresConfiguration, .temporaryDatabase)
     struct Integration {
@@ -323,6 +327,43 @@ import Testing
                 #expect(!tableNames.contains("rollback_test"))
             }
         }
+
+        #if Configuration
+        @Suite struct `Config Reader` {
+            let db: TemporaryDatabase
+
+            init() throws {
+                db = try #require(TemporaryDatabase.current)
+            }
+
+            @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, *)
+            @Test func `Reads connection config from config reader`() async throws {
+                let reader = ConfigReader(
+                    provider: InMemoryProvider(
+                        values: [
+                            "crane.postgres.host": ConfigValue(.string(db.configuration.host), isSecret: false),
+                            "crane.postgres.port": ConfigValue(.int(db.configuration.port), isSecret: false),
+                            "crane.postgres.username": ConfigValue(.string(db.configuration.username), isSecret: false),
+                            "crane.postgres.password": ConfigValue(.string(db.configuration.password), isSecret: true),
+                            "crane.postgres.database": ConfigValue(.string(db.name), isSecret: false),
+                        ]
+                    )
+                )
+                let target = try PostgresMigrationTarget(reader: reader)
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tables = try await client.tableNames()
+                    #expect(tables.contains("crane_schema_history"))
+                }
+            }
+        }
+        #endif
     }
 }
 
