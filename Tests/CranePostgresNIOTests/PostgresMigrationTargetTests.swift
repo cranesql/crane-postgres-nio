@@ -79,7 +79,7 @@ import Configuration
                     let row1 = historyRows[0]
                     #expect(row1.rank == 1)
                     #expect(row1.version == 1)
-                    #expect(row1.description == "migrations/v1.create_users.apply.sql")
+                    #expect(row1.description == "create_users")
                     #expect(row1.type == "APPLY")
                     #expect(row1.user == db.configuration.username)
                     #expect(row1.succeeded)
@@ -87,7 +87,7 @@ import Configuration
                     let row2 = historyRows[1]
                     #expect(row2.rank == 2)
                     #expect(row2.version == nil)
-                    #expect(row2.description == "migrations/repeatable/repeat.active_users_view.sql")
+                    #expect(row2.description == "active_users_view")
                     #expect(row2.type == "REPEATABLE")
                     #expect(row2.user == db.configuration.username)
                     #expect(row2.succeeded)
@@ -211,7 +211,7 @@ import Configuration
                         SchemaHistoryRow(
                             rank: 1,
                             version: 1,
-                            description: "migrations/v1.create_users.apply.sql",
+                            description: "create_users",
                             type: .apply,
                             checksum: "abc123",
                             user: "integration",
@@ -231,7 +231,7 @@ import Configuration
                             PostgresHistoryRow(
                                 rank: 1,
                                 version: 1,
-                                description: "migrations/v1.create_users.apply.sql",
+                                description: "create_users",
                                 type: "APPLY",
                                 checksum: "abc123",
                                 user: "integration",
@@ -248,7 +248,7 @@ import Configuration
                 let row = SchemaHistoryRow(
                     rank: 1,
                     version: 1,
-                    description: "migrations/v1.create_users.apply.sql",
+                    description: "create_users",
                     type: .apply,
                     checksum: "abc123",
                     user: "integration",
