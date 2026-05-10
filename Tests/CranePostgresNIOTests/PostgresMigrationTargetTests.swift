@@ -57,7 +57,7 @@ import Configuration
 
                 let migrator = try Migrator(
                     rootPath: fixturesPath,
-                    paths: ["migrations", "migrations/repeatable"],
+                    paths: ["migrations"],
                     target: target
                 )
 
@@ -97,7 +97,7 @@ import Configuration
             @Test func `Applying twice does not re-execute migrations`() async throws {
                 let migrator = try Migrator(
                     rootPath: fixturesPath,
-                    paths: ["migrations", "migrations/repeatable"],
+                    paths: ["migrations"],
                     target: target
                 )
 
@@ -341,11 +341,11 @@ import Configuration
                 let reader = ConfigReader(
                     provider: InMemoryProvider(
                         values: [
-                            "crane.postgres.host": ConfigValue(.string(db.configuration.host), isSecret: false),
-                            "crane.postgres.port": ConfigValue(.int(db.configuration.port), isSecret: false),
-                            "crane.postgres.username": ConfigValue(.string(db.configuration.username), isSecret: false),
-                            "crane.postgres.password": ConfigValue(.string(db.configuration.password), isSecret: true),
-                            "crane.postgres.database": ConfigValue(.string(db.name), isSecret: false),
+                            "host": ConfigValue(.string(db.configuration.host), isSecret: false),
+                            "port": ConfigValue(.int(db.configuration.port), isSecret: false),
+                            "username": ConfigValue(.string(db.configuration.username), isSecret: false),
+                            "password": ConfigValue(.string(db.configuration.password), isSecret: true),
+                            "database": ConfigValue(.string(db.name), isSecret: false),
                         ]
                     )
                 )
