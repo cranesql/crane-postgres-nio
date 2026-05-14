@@ -18,7 +18,6 @@ import PostgresNIO
 public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     private let client: PostgresClient
     private let logger = Logger(label: "PostgresMigrationTarget")
-    private let username: String
 
     @TaskLocal private static var transactionConnection: PostgresConnection?
 
@@ -29,7 +28,6 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
         password: String,
         database: String? = nil
     ) {
-        self.username = username
         client = PostgresClient(
             configuration: PostgresClient.Configuration(
                 host: host,
@@ -50,7 +48,15 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
     // MARK: - User
 
-    public func currentUser() async throws -> String { username }
+    public func currentUser() async throws -> String? {
+        try await withConnection { connection in
+            let rows = try await connection.query("SELECT current_user::text", logger: logger)
+            for try await user in rows.decode(String.self) {
+                return user
+            }
+            throw PostgresMigrationTargetError.missingCurrentUser
+        }
+    }
 
     // MARK: - History
 
@@ -151,6 +157,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
 package enum PostgresMigrationTargetError: Error, Equatable {
     case unknownMigrationType(String)
+    case missingCurrentUser
 }
 
 extension SchemaHistoryRow {
