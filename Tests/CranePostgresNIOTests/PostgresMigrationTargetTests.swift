@@ -142,6 +142,31 @@ import Configuration
             }
         }
 
+        @Suite struct User {
+            let db: TemporaryDatabase
+            let target: PostgresMigrationTarget
+
+            init() throws {
+                db = try #require(TemporaryDatabase.current)
+                target = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+            }
+
+            @Test func `Queries the current database user`() async throws {
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    let user = try await target.currentUser()
+                    #expect(user == db.configuration.username)
+                    group.cancelAll()
+                }
+            }
+        }
+
         @Suite struct History {
             let db: TemporaryDatabase
             let target: PostgresMigrationTarget
