@@ -353,6 +353,205 @@ import Configuration
             }
         }
 
+        @Suite struct Schema {
+            let db: TemporaryDatabase
+
+            init() throws {
+                db = try #require(TemporaryDatabase.current)
+            }
+
+            private func makeTarget(schema: String? = nil) -> PostgresMigrationTarget {
+                PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name,
+                    schema: schema
+                )
+            }
+
+            @Test func `Defaults to unqualified history table when no schema is configured`() async throws {
+                let target = makeTarget()
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tablesInPublic = try await client.tableNames(in: "public")
+                    #expect(tablesInPublic.contains("crane_schema_history"))
+                }
+            }
+
+            @Test func `Creates history table in the configured schema`() async throws {
+                try await db.withClient { try await $0.query("CREATE SCHEMA custom_schema") }
+                let target = makeTarget(schema: "custom_schema")
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tablesInCustomSchema = try await client.tableNames(in: "custom_schema")
+                    let tablesInPublic = try await client.tableNames(in: "public")
+                    #expect(tablesInCustomSchema.contains("crane_schema_history"))
+                    #expect(!tablesInPublic.contains("crane_schema_history"))
+                }
+            }
+
+            @Test func `Migration tables land in the configured schema`() async throws {
+                try await db.withClient { try await $0.query("CREATE SCHEMA custom_schema") }
+                let target = makeTarget(schema: "custom_schema")
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    try await target.withTransaction {
+                        try await target.execute("CREATE TABLE users (id INTEGER)")
+                    }
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tablesInCustomSchema = try await client.tableNames(in: "custom_schema")
+                    let tablesInPublic = try await client.tableNames(in: "public")
+                    #expect(tablesInCustomSchema.contains("users"))
+                    #expect(!tablesInPublic.contains("users"))
+                }
+            }
+
+            @Test func `search_path is scoped to the migration transaction`() async throws {
+                try await db.withClient { try await $0.query("CREATE SCHEMA custom_schema") }
+                let target = makeTarget(schema: "custom_schema")
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    try await target.withTransaction {
+                        try await target.execute("CREATE TABLE inside_tx (id INTEGER)")
+                    }
+                    // Outside withTransaction → no SET LOCAL → default search_path → public.
+                    try await target.execute("CREATE TABLE outside_tx (id INTEGER)")
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tablesInCustomSchema = try await client.tableNames(in: "custom_schema")
+                    let tablesInPublic = try await client.tableNames(in: "public")
+                    #expect(tablesInCustomSchema.contains("inside_tx"))
+                    #expect(!tablesInCustomSchema.contains("outside_tx"))
+                    #expect(tablesInPublic.contains("outside_tx"))
+                }
+            }
+
+            @Test func `Different schemas isolate their history`() async throws {
+                try await db.withClient { client in
+                    try await client.query("CREATE SCHEMA tenant_a")
+                    try await client.query("CREATE SCHEMA tenant_b")
+                }
+                let targetA = makeTarget(schema: "tenant_a")
+                let targetB = makeTarget(schema: "tenant_b")
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await targetA.run() }
+                    group.addTask { await targetB.run() }
+
+                    try await targetA.setUpHistory()
+                    try await targetA.record(
+                        SchemaHistoryRow(
+                            rank: 1,
+                            version: 1,
+                            description: "tenant_a_migration",
+                            type: .apply,
+                            checksum: "x",
+                            user: "u",
+                            executionDate: Date(timeIntervalSince1970: 0),
+                            duration: .milliseconds(1),
+                            succeeded: true
+                        )
+                    )
+
+                    try await targetB.setUpHistory()
+                    try await targetB.record(
+                        SchemaHistoryRow(
+                            rank: 1,
+                            version: 1,
+                            description: "tenant_b_migration",
+                            type: .apply,
+                            checksum: "x",
+                            user: "u",
+                            executionDate: Date(timeIntervalSince1970: 0),
+                            duration: .milliseconds(1),
+                            succeeded: true
+                        )
+                    )
+
+                    let descriptionsA = try await targetA.history().map(\.description)
+                    let descriptionsB = try await targetB.history().map(\.description)
+                    #expect(descriptionsA == ["tenant_a_migration"])
+                    #expect(descriptionsB == ["tenant_b_migration"])
+
+                    group.cancelAll()
+                }
+            }
+
+            @Test func `Handles schema names containing double-quote characters`() async throws {
+                try await db.withClient { try await $0.query(#"CREATE SCHEMA "weird""name""#) }
+                let target = makeTarget(schema: #"weird"name"#)
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    try await target.setUpHistory()
+                    try await target.record(
+                        SchemaHistoryRow(
+                            rank: 1,
+                            version: 1,
+                            description: "with_quotes",
+                            type: .apply,
+                            checksum: "x",
+                            user: "u",
+                            executionDate: Date(timeIntervalSince1970: 0),
+                            duration: .milliseconds(1),
+                            succeeded: true
+                        )
+                    )
+                    #expect(try await target.history().map(\.description) == ["with_quotes"])
+
+                    try await target.withTransaction {
+                        try await target.execute("CREATE TABLE inside (id INTEGER)")
+                    }
+
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tables = try await client.tableNames(in: #"weird"name"#)
+                    #expect(tables.contains("crane_schema_history"))
+                    #expect(tables.contains("inside"))
+                }
+            }
+
+            @Test func `Throws when configured schema does not exist`() async throws {
+                let target = makeTarget(schema: "does_not_exist")
+
+                await withTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    await #expect(throws: PSQLError.self) {
+                        try await target.setUpHistory()
+                    }
+
+                    group.cancelAll()
+                }
+            }
+        }
+
         #if Configuration
         @Suite struct `Config Reader` {
             let db: TemporaryDatabase
@@ -387,6 +586,36 @@ import Configuration
                     #expect(tables.contains("crane_schema_history"))
                 }
             }
+
+            @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, *)
+            @Test func `Reads schema from config reader`() async throws {
+                try await db.withClient { try await $0.query("CREATE SCHEMA custom_schema") }
+
+                let reader = ConfigReader(
+                    provider: InMemoryProvider(
+                        values: [
+                            "host": ConfigValue(.string(db.configuration.host), isSecret: false),
+                            "port": ConfigValue(.int(db.configuration.port), isSecret: false),
+                            "username": ConfigValue(.string(db.configuration.username), isSecret: false),
+                            "password": ConfigValue(.string(db.configuration.password), isSecret: true),
+                            "database": ConfigValue(.string(db.name), isSecret: false),
+                            "schema": ConfigValue(.string("custom_schema"), isSecret: false),
+                        ]
+                    )
+                )
+                let target = try PostgresMigrationTarget(reader: reader)
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+                    try await target.setUpHistory()
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let tablesInCustomSchema = try await client.tableNames(in: "custom_schema")
+                    #expect(tablesInCustomSchema.contains("crane_schema_history"))
+                }
+            }
         }
         #endif
     }
@@ -409,6 +638,19 @@ extension PostgresClient {
         var names = Set<String>()
 
         for try await name in try await query("SELECT table_name FROM information_schema.tables").decode(String.self) {
+            names.insert(name)
+        }
+
+        return names
+    }
+
+    fileprivate func tableNames(in schema: String) async throws -> Set<String> {
+        var names = Set<String>()
+
+        let q: PostgresQuery = """
+            SELECT table_name FROM information_schema.tables WHERE table_schema = \(schema)
+            """
+        for try await name in try await query(q).decode(String.self) {
             names.insert(name)
         }
 

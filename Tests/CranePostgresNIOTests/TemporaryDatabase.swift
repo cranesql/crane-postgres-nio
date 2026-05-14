@@ -21,6 +21,7 @@ struct TemporaryDatabase: Sendable {
 
     @TaskLocal static var current: TemporaryDatabase?
 
+    @discardableResult
     func withClient<T>(
         _ body: (PostgresClient) async throws -> T
     ) async throws -> T {
