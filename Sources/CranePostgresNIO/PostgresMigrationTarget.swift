@@ -18,6 +18,7 @@ import PostgresNIO
 public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     private let client: PostgresClient
     private let logger = Logger(label: "PostgresMigrationTarget")
+    private let schema: String?
 
     @TaskLocal private static var transactionConnection: PostgresConnection?
 
@@ -26,8 +27,10 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
         port: Int = 5432,
         username: String,
         password: String,
-        database: String? = nil
+        database: String? = nil,
+        schema: String? = nil
     ) {
+        self.schema = schema
         client = PostgresClient(
             configuration: PostgresClient.Configuration(
                 host: host,
@@ -38,6 +41,18 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
                 tls: .disable
             )
         )
+    }
+
+    private var qualifiedHistoryTable: String {
+        if let schema {
+            return #""\#(Self.escapedIdentifier(schema))"."crane_schema_history""#
+        } else {
+            return "crane_schema_history"
+        }
+    }
+
+    private static func escapedIdentifier(_ name: String) -> String {
+        name.replacingOccurrences(of: "\"", with: "\"\"")
     }
 
     // MARK: - Lifecycle
@@ -63,7 +78,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     public func setUpHistory() async throws {
         try await execute(
             """
-            CREATE TABLE IF NOT EXISTS crane_schema_history (
+            CREATE TABLE IF NOT EXISTS \(qualifiedHistoryTable) (
                 rank INTEGER NOT NULL PRIMARY KEY,
                 version INTEGER,
                 description TEXT NOT NULL,
@@ -81,7 +96,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     public func history() async throws -> [SchemaHistoryRow] {
         let query: PostgresQuery = """
             SELECT rank, version, description, type, checksum, executed_by, executed_at, executed_in_ms, succeeded
-            FROM crane_schema_history
+            FROM \(unescaped: qualifiedHistoryTable)
             ORDER BY rank
             """
 
@@ -112,7 +127,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
         let succeeded = row.succeeded
 
         let query: PostgresQuery = """
-            INSERT INTO crane_schema_history
+            INSERT INTO \(unescaped: qualifiedHistoryTable)
                 (rank, version, description, type, checksum, executed_by, executed_at, executed_in_ms, succeeded)
             VALUES
                 (\(rank), \(version), \(description), \(type), \(checksum), \(user), \(executionDate), \(executionTimeMilliseconds), \(succeeded))
@@ -148,6 +163,12 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
     public func withTransaction(_ body: @Sendable () async throws -> Void) async throws {
         try await client.withTransaction(logger: logger) { connection in
+            if let schema {
+                let setSearchPath: PostgresQuery = """
+                    SET LOCAL search_path TO \(unescaped: #""\#(Self.escapedIdentifier(schema))""#), "$user", public
+                    """
+                try await connection.query(setSearchPath, logger: logger)
+            }
             try await Self.$transactionConnection.withValue(connection) {
                 try await body()
             }

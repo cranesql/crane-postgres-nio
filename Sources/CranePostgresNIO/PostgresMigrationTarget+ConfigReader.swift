@@ -24,6 +24,7 @@ extension PostgresMigrationTarget {
     /// - `username` — Database username. Required.
     /// - `password` — Database password. Required.
     /// - `database` — Database name. Optional.
+    /// - `schema` — Database schema. Optional.
     @available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, *)
     public init(reader: ConfigReader) throws {
         let host = reader.string(forKey: "host", default: "localhost")
@@ -31,13 +32,15 @@ extension PostgresMigrationTarget {
         let username = try reader.requiredString(forKey: "username")
         let password = try reader.requiredString(forKey: "password", isSecret: true)
         let database = reader.string(forKey: "database")
+        let schema = reader.string(forKey: "schema")
 
         self.init(
             host: host,
             port: port,
             username: username,
             password: password,
-            database: database
+            database: database,
+            schema: schema
         )
     }
 }
