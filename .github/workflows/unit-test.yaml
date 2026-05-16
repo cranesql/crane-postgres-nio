@@ -51,6 +51,7 @@ jobs:
             -instr-profile="$CODECOV_DIR/default.profdata" \
           > info.lcov
       - name: Install curl
+        if: ${{ !cancelled() }}
         run: |
           if ! command -v curl > /dev/null; then
             apt-get update
