@@ -226,6 +226,28 @@ struct `Postgres Advisory Lock` {
             #expect(logHandler.entries.contains(failureLogEntry))
         }
 
+        @Test func `Throws when maxAttempts is 1 and the lock is held`() async throws {
+            let qualifiedHistoryTable = "public.crane_schema_history"
+            let firstHolder = PostgresAdvisoryLock(qualifiedHistoryTable: qualifiedHistoryTable, logger: logger)
+            let secondHolder = PostgresAdvisoryLock(qualifiedHistoryTable: qualifiedHistoryTable, logger: logger)
+
+            try await db.withClient { client in
+                try await client.withConnection { connectionA in
+                    try await firstHolder.acquire(on: connectionA, maxAttempts: 1, retryDelay: .zero)
+
+                    try await client.withConnection { connectionB in
+                        _ = await #expect(throws: PostgresAdvisoryLock.AcquisitionFailed.self) {
+                            try await secondHolder.acquire(
+                                on: connectionB,
+                                maxAttempts: 1,
+                                retryDelay: .zero
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         @Test func `Locks scoped to different qualified tables don't block each other`() async throws {
             let lockA = PostgresAdvisoryLock(
                 qualifiedHistoryTable: "tenant_a.crane_schema_history",

@@ -109,7 +109,10 @@ package struct PostgresAdvisoryLock {
                 return
             }
 
-            if attempt == 1 {
+            if attempt == maxAttempts {
+                logger.error("Another instance of Crane is still holding the advisory lock. Giving up.")
+                throw AcquisitionFailed()
+            } else if attempt == 1 {
                 // Notify the user on the first attempt only to reduce noise.
                 logger.info(
                     "Another instance of Crane is already running. Waiting for it to release the advisory lock.",
@@ -118,7 +121,7 @@ package struct PostgresAdvisoryLock {
                         "pg_advisory_lock.retry_delay_ms": "\(retryDelay.milliseconds)",
                     ]
                 )
-            } else if attempt < maxAttempts {
+            } else {
                 logger.debug(
                     "Retrying advisory lock acquisition after delay.",
                     metadata: [
@@ -126,9 +129,6 @@ package struct PostgresAdvisoryLock {
                         "pg_advisory_lock.retry_delay_ms": "\(retryDelay.milliseconds)",
                     ]
                 )
-            } else {
-                logger.error("Another instance of Crane is still holding the advisory lock. Giving up.")
-                throw AcquisitionFailed()
             }
 
             try await Task.sleep(for: retryDelay)

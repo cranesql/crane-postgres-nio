@@ -19,6 +19,8 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     private let client: PostgresClient
     private let logger = Logger(label: "PostgresMigrationTarget")
     private let schema: String?
+    private let qualifiedHistoryTable: String
+    private let advisoryLock: PostgresAdvisoryLock
 
     @TaskLocal private static var transactionConnection: PostgresConnection?
 
@@ -41,14 +43,15 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
                 tls: .disable
             )
         )
-    }
 
-    private var qualifiedHistoryTable: String {
-        if let schema {
-            return #""\#(Self.escapedIdentifier(schema))"."crane_schema_history""#
-        } else {
-            return "crane_schema_history"
-        }
+        qualifiedHistoryTable =
+            if let schema {
+                #""\#(Self.escapedIdentifier(schema))"."crane_schema_history""#
+            } else {
+                "crane_schema_history"
+            }
+
+        advisoryLock = PostgresAdvisoryLock(qualifiedHistoryTable: qualifiedHistoryTable, logger: logger)
     }
 
     private static func escapedIdentifier(_ name: String) -> String {
@@ -172,6 +175,14 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
             try await Self.$transactionConnection.withValue(connection) {
                 try await body()
             }
+        }
+    }
+
+    // MARK: - Lock
+
+    public func withLock(_ body: @Sendable () async throws -> Void) async throws {
+        try await client.withConnection { connection in
+            try await advisoryLock.withLock(on: connection, body: body)
         }
     }
 }
