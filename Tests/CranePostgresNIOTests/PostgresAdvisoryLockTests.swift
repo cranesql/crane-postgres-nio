@@ -141,7 +141,7 @@ struct `Postgres Advisory Lock` {
                             await events.append("first acquired")
                             firstAcquired.continuation.yield()
                             firstAcquired.continuation.finish()
-                            try await Task.sleep(for: .milliseconds(150))
+                            try await Task.sleep(for: .milliseconds(300))
                             try await firstHolder.release(on: connection)
                             await events.append("first released")
                         }
