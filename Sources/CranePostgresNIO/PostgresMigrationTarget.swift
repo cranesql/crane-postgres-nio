@@ -22,7 +22,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     private let qualifiedHistoryTable: String
     private let advisoryLock: PostgresAdvisoryLock
 
-    @TaskLocal private static var transactionConnection: PostgresConnection?
+    @TaskLocal private static var currentConnection: PostgresConnection?
 
     public init(
         host: String = "localhost",
@@ -67,7 +67,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     // MARK: - User
 
     public func currentUser() async throws -> String? {
-        try await withConnection { connection in
+        try await withScopedConnection { connection in
             let rows = try await connection.query("SELECT current_user::text", logger: logger)
             for try await user in rows.decode(String.self) {
                 return user
@@ -105,7 +105,7 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
         var rows = [SchemaHistoryRow]()
 
-        try await withConnection { connection in
+        try await withScopedConnection { connection in
             for try await row
                 in try await connection
                 .query(query, logger: logger)
@@ -146,14 +146,14 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     }
 
     private func execute(_ query: PostgresQuery) async throws {
-        try await withConnection { connection in
+        try await withScopedConnection { connection in
             try await connection.query(query, logger: logger)
         }
     }
 
     @discardableResult
-    private func withConnection<T>(_ body: sending (PostgresConnection) async throws -> T) async throws -> T {
-        if let connection = Self.transactionConnection {
+    private func withScopedConnection<T>(_ body: sending (PostgresConnection) async throws -> T) async throws -> T {
+        if let connection = Self.currentConnection {
             return try await body(connection)
         } else {
             return try await client.withConnection { connection in
@@ -165,15 +165,15 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     // MARK: - Transaction
 
     public func withTransaction(_ body: @Sendable () async throws -> Void) async throws {
-        try await client.withTransaction(logger: logger) { connection in
-            if let schema {
-                let setSearchPath: PostgresQuery = """
-                    SET LOCAL search_path TO \(unescaped: #""\#(Self.escapedIdentifier(schema))""#), "$user", public
-                    """
-                try await connection.query(setSearchPath, logger: logger)
-            }
-            try await Self.$transactionConnection.withValue(connection) {
-                try await body()
+        try await withScopedConnection { connection in
+            try await connection.withTransaction(logger: logger) { connection in
+                if let schema {
+                    let setSearchPath: PostgresQuery = """
+                        SET LOCAL search_path TO \(unescaped: #""\#(Self.escapedIdentifier(schema))""#), "$user", public
+                        """
+                    try await connection.query(setSearchPath, logger: logger)
+                }
+                try await Self.$currentConnection.withValue(connection, operation: body)
             }
         }
     }
@@ -182,7 +182,9 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
     public func withLock(_ body: @Sendable () async throws -> Void) async throws {
         try await client.withConnection { connection in
-            try await advisoryLock.withLock(on: connection, body: body)
+            try await advisoryLock.withLock(on: connection) {
+                try await Self.$currentConnection.withValue(connection, operation: body)
+            }
         }
     }
 }
