@@ -633,6 +633,66 @@ import Configuration
                 #expect(await events.entries == ["body ran"])
             }
 
+            // Pins the invariant that every operation inside `withLock`'s body runs on the
+            // lock-holding connection. Previously each operation checked out its own pool
+            // connection while the lock-holder sat idle — a failure mode where the lock-holder
+            // dying mid-body would release the advisory lock while work continued unprotected
+            // on the other connections.
+            @Test func `withLock pins all body operations to a single connection`() async throws {
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    try await target.withLock {
+                        try await target.setUpHistory()
+                        try await target.withTransaction {
+                            try await target.execute("SELECT 1")
+                        }
+
+                        let targetBackendCount = try await db.withClient {
+                            try await $0.targetBackendCount()
+                        }
+                        #expect(
+                            targetBackendCount == 1,
+                            """
+                            All work inside withLock should run on the lock-holding connection. \
+                            Found \(targetBackendCount) distinct target backends.
+                            """
+                        )
+                    }
+
+                    group.cancelAll()
+                }
+            }
+
+            @Test func `Cancelling the task running withLock releases the advisory lock`() async throws {
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    let acquired = AsyncStream<Void>.makeStream()
+
+                    let lockHolder = Task {
+                        try await target.withLock {
+                            acquired.continuation.yield()
+                            acquired.continuation.finish()
+                            try await Task.sleep(for: .seconds(60))
+                        }
+                    }
+
+                    for await _ in acquired.stream { break }
+
+                    let beforeCancel = try await db.withClient { try await $0.grantedAdvisoryLocks() }
+                    #expect(beforeCancel.count == 1)
+
+                    lockHolder.cancel()
+                    _ = try? await lockHolder.value
+
+                    let afterCancel = try await db.withClient { try await $0.grantedAdvisoryLocks() }
+                    #expect(afterCancel.isEmpty)
+
+                    group.cancelAll()
+                }
+            }
+
             @Test func `Targets on different schemas don't block each other`() async throws {
                 let targetA = PostgresMigrationTarget(
                     host: db.configuration.host,
@@ -859,6 +919,25 @@ extension PostgresClient {
         }
 
         return rows
+    }
+
+    fileprivate func targetBackendCount() async throws -> Int {
+        // Counts client backends connected to the same database, excluding our own (diagnostic)
+        // backend. `pg_stat_activity` is cluster-wide, so we filter to the current database; we
+        // also exclude `pg_backend_pid()` so the diagnostic client's connection doesn't pollute
+        // the count. What remains is the target's pool footprint at this instant, including any
+        // idle connections the pool has kept warm. Assumes PostgresClient's default of
+        // `minConnections = 0` — pre-warmed idle connections would otherwise inflate the count.
+        let q: PostgresQuery = """
+            SELECT count(*)::int4 FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid != pg_backend_pid()
+              AND backend_type = 'client backend'
+            """
+        for try await count in try await query(q).decode(Int32.self) {
+            return Int(count)
+        }
+        return 0
     }
 
     fileprivate func grantedAdvisoryLocks() async throws -> [AdvisoryLockKey] {
