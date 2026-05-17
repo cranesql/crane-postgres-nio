@@ -17,4 +17,6 @@ jobs:
   unit_test:
     name: Unit Test
     uses: ./.github/workflows/unit-test.yaml
+    with:
+      include_nightly_main: true
     secrets: inherit

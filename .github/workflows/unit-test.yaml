@@ -1,6 +1,11 @@
 name: Unit Test
 on:
   workflow_call:
+    inputs:
+      include_nightly_main:
+        description: "Whether to include nightly-main in the Swift version matrix."
+        type: boolean
+        default: false
   push:
     branches: [main]
 concurrency:
@@ -13,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift_version: ["6.2", "6.3", "nightly-main"]
+        swift_version: ${{ fromJSON(inputs.include_nightly_main && '["6.2", "6.3", "nightly-main"]' || '["6.2", "6.3"]') }}
         os_version: ["jammy"]
     container:
       image: ${{ (contains(matrix.swift_version, 'nightly') && 'swiftlang/swift') || 'swift' }}:${{ matrix.swift_version }}-${{ matrix.os_version }}
@@ -59,7 +64,7 @@ jobs:
           fi
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5.5.2
+        uses: codecov/codecov-action@v6.0.0
         with:
           report_type: test_results
           files: ./junit.xml,./junit-swift-testing.xml
@@ -68,7 +73,7 @@ jobs:
           flags: linux-${{ matrix.os_version }},swift-${{ matrix.swift_version }}
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload code coverage report to Codecov
-        uses: codecov/codecov-action@v5.5.2
+        uses: codecov/codecov-action@v6.0.0
         with:
           files: ./info.lcov
           disable_search: true
@@ -119,8 +124,9 @@ jobs:
           > info.lcov
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@v6.0.0
         with:
+          report_type: test_results
           files: ./junit.xml,./junit-swift-testing.xml
           disable_search: true
           fail_ci_if_error: true
