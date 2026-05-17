@@ -24,6 +24,8 @@ let package = Package(
         .package(url: "https://github.com/cranesql/crane.git", branch: "main"),
         .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", "1.0.0"..<"5.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.12.0"),
     ],
     targets: [
         .target(
@@ -31,6 +33,8 @@ let package = Package(
             dependencies: [
                 .product(name: "Crane", package: "crane"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(
                     name: "Configuration",
                     package: "swift-configuration",
@@ -44,6 +48,8 @@ let package = Package(
             dependencies: [
                 .target(name: "CranePostgresNIO"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "InMemoryLogging", package: "swift-log"),
                 .product(
                     name: "Configuration",
                     package: "swift-configuration",

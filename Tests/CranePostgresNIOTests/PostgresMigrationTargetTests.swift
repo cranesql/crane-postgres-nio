@@ -22,7 +22,7 @@ import Configuration
 #endif
 
 @Suite struct `Postgres Migration Target` {
-    @Suite(.disabledWithoutPostgresConfiguration, .temporaryDatabase)
+    @Suite(.disabledWithoutPostgresConfiguration, .temporaryDatabase, .timeLimit(.minutes(1)))
     struct Integration {
         @Suite struct `End to End` {
             let db: TemporaryDatabase
@@ -105,6 +105,50 @@ import Configuration
                     group.addTask { await target.run() }
                     try await migrator.apply()
                     try await migrator.apply()
+                    group.cancelAll()
+                }
+
+                try await db.withClient { client in
+                    let historyRows = try await client.historyRows()
+                    #expect(historyRows.count == 2)
+                }
+            }
+
+            @Test func `Applying concurrently from two replicas does not conflict`() async throws {
+                let targetA = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+                let targetB = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+                let migratorA = try Migrator(
+                    rootPath: fixturesPath,
+                    paths: ["migrations"],
+                    target: targetA
+                )
+                let migratorB = try Migrator(
+                    rootPath: fixturesPath,
+                    paths: ["migrations"],
+                    target: targetB
+                )
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await targetA.run() }
+                    group.addTask { await targetB.run() }
+
+                    async let applyA: Void = migratorA.apply()
+                    async let applyB: Void = migratorB.apply()
+                    try await applyA
+                    try await applyB
+
                     group.cancelAll()
                 }
 
@@ -552,6 +596,124 @@ import Configuration
             }
         }
 
+        @Suite struct Lock {
+            let db: TemporaryDatabase
+            let target: PostgresMigrationTarget
+
+            init() throws {
+                db = try #require(TemporaryDatabase.current)
+                target = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+            }
+
+            @Test func `Holds the advisory lock while the body runs`() async throws {
+                let events = EventLog()
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    try await target.withLock {
+                        await events.append("body ran")
+                        let grantedLocks = try await db.withClient { try await $0.grantedAdvisoryLocks() }
+                        #expect(grantedLocks.count == 1)
+                        #expect(grantedLocks.first?.classID == 0x4352_4E45)
+                    }
+
+                    let grantedLocks = try await db.withClient { try await $0.grantedAdvisoryLocks() }
+                    #expect(grantedLocks.isEmpty)
+
+                    group.cancelAll()
+                }
+
+                #expect(await events.entries == ["body ran"])
+            }
+
+            @Test func `Targets on different schemas don't block each other`() async throws {
+                let targetA = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name,
+                    schema: "tenant_a"
+                )
+                let targetB = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name,
+                    schema: "tenant_b"
+                )
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await targetA.run() }
+                    group.addTask { await targetB.run() }
+
+                    try await targetA.withLock {
+                        try await targetB.withLock {
+                            let grantedLocks = try await db.withClient { try await $0.grantedAdvisoryLocks() }
+                            #expect(grantedLocks.count == 2)
+                            #expect(grantedLocks.allSatisfy { $0.classID == 0x4352_4E45 })
+                            #expect(Set(grantedLocks.map(\.objectID)).count == 2)
+                        }
+                    }
+
+                    group.cancelAll()
+                }
+            }
+
+            @Test func `Targets on the same schema serialize withLock calls`() async throws {
+                let targetA = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+                let targetB = PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name
+                )
+                let events = EventLog()
+                let aAcquired = AsyncStream<Void>.makeStream()
+
+                try await withThrowingTaskGroup { group in
+                    group.addTask { await targetA.run() }
+                    group.addTask { await targetB.run() }
+
+                    group.addTask {
+                        try await targetA.withLock {
+                            await events.append("A acquired")
+                            aAcquired.continuation.yield()
+                            aAcquired.continuation.finish()
+                            try await Task.sleep(for: .milliseconds(200))
+                        }
+                        await events.append("A released")
+                    }
+
+                    for await _ in aAcquired.stream { break }
+
+                    try await targetB.withLock {
+                        await events.append("B acquired")
+                    }
+
+                    group.cancelAll()
+                }
+
+                let recorded = await events.entries
+                #expect(recorded == ["A acquired", "A released", "B acquired"])
+            }
+        }
+
         #if Configuration
         @Suite struct `Config Reader` {
             let db: TemporaryDatabase
@@ -697,5 +859,37 @@ extension PostgresClient {
         }
 
         return rows
+    }
+
+    fileprivate func grantedAdvisoryLocks() async throws -> [AdvisoryLockKey] {
+        var keys: [AdvisoryLockKey] = []
+        // Filter by current database so parallel test runs in other temporary databases don't
+        // pollute the result — `pg_locks` is cluster-wide. Cast to int4 because `pg_locks`
+        // exposes classid/objid as `oid` (unsigned), but the advisory-lock API uses signed int4.
+        let q: PostgresQuery = """
+            SELECT classid::int4, objid::int4 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND granted
+              AND objsubid = 2
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            ORDER BY classid, objid
+            """
+        for try await (classID, objectID) in try await query(q).decode((Int32, Int32).self) {
+            keys.append(AdvisoryLockKey(classID: classID, objectID: objectID))
+        }
+        return keys
+    }
+}
+
+private struct AdvisoryLockKey: Hashable, Sendable {
+    let classID: Int32
+    let objectID: Int32
+}
+
+private actor EventLog {
+    private(set) var entries: [String] = []
+
+    func append(_ entry: String) {
+        entries.append(entry)
     }
 }
