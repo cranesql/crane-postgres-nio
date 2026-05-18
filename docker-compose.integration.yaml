@@ -1,7 +1,7 @@
 name: crane-postgres-nio-integration-tests
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:18
     environment:
       - POSTGRES_USER=integration
       - POSTGRES_PASSWORD=integration
