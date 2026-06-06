@@ -13,11 +13,12 @@
 
 public import Crane
 import Foundation
+package import Logging
 import PostgresNIO
 
 public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     private let client: PostgresClient
-    private let logger = Logger(label: "PostgresMigrationTarget")
+    private let logger: Logger
     private let schema: String?
     private let qualifiedHistoryTable: String
     private let advisoryLock: PostgresAdvisoryLock
@@ -32,7 +33,28 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
         database: String? = nil,
         schema: String? = nil
     ) {
+        self.init(
+            host: host,
+            port: port,
+            username: username,
+            password: password,
+            database: database,
+            schema: schema,
+            logger: Logger(label: "PostgresMigrationTarget")
+        )
+    }
+
+    package init(
+        host: String = "localhost",
+        port: Int = 5432,
+        username: String,
+        password: String,
+        database: String? = nil,
+        schema: String? = nil,
+        logger: Logger
+    ) {
         self.schema = schema
+        self.logger = logger
         client = PostgresClient(
             configuration: PostgresClient.Configuration(
                 host: host,
@@ -67,21 +89,28 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
     // MARK: - User
 
     public func currentUser() async throws -> String? {
-        try await withScopedConnection { connection in
-            let rows = try await connection.query("SELECT current_user::text", logger: logger)
-            for try await user in rows.decode(String.self) {
-                return user
+        do {
+            return try await withScopedConnection { connection in
+                let rows = try await connection.query("SELECT current_user::text", logger: logger)
+                for try await user in rows.decode(String.self) {
+                    return user
+                }
+                throw PostgresMigrationTargetError.missingCurrentUser
             }
-            throw PostgresMigrationTargetError.missingCurrentUser
+        } catch let error as PSQLError {
+            logger.error("Failed to query current database user.")
+            throw error
+        } catch {
+            logger.error("Failed to query current database user.", error: error)
+            throw error
         }
     }
 
     // MARK: - History
 
     public func setUpHistory() async throws {
-        try await execute(
-            """
-            CREATE TABLE IF NOT EXISTS \(qualifiedHistoryTable) (
+        let query: PostgresQuery = """
+            CREATE TABLE IF NOT EXISTS \(unescaped: qualifiedHistoryTable) (
                 rank INTEGER NOT NULL PRIMARY KEY,
                 version INTEGER,
                 description TEXT NOT NULL,
@@ -93,7 +122,15 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
                 succeeded BOOLEAN NOT NULL
             )
             """
-        )
+        do {
+            try await execute(query)
+        } catch let error as PSQLError {
+            logger.error("Failed to set up schema history table.")
+            throw error
+        } catch {
+            logger.error("Failed to set up schema history table.", error: error)
+            throw error
+        }
     }
 
     public func history() async throws -> [SchemaHistoryRow] {
@@ -105,14 +142,22 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
 
         var rows = [SchemaHistoryRow]()
 
-        try await withScopedConnection { connection in
-            for try await row
-                in try await connection
-                .query(query, logger: logger)
-                .decode((Int32, Int32?, String, String, String, String, Date, Int32, Bool).self)
-            {
-                rows.append(try SchemaHistoryRow(row: row))
+        do {
+            try await withScopedConnection { connection in
+                for try await row
+                    in try await connection
+                    .query(query, logger: logger)
+                    .decode((Int32, Int32?, String, String, String, String, Date, Int32, Bool).self)
+                {
+                    rows.append(try SchemaHistoryRow(row: row))
+                }
             }
+        } catch let error as PSQLError {
+            logger.error("Failed to load schema history.")
+            throw error
+        } catch {
+            logger.error("Failed to load schema history.", error: error)
+            throw error
         }
 
         return rows
@@ -136,13 +181,29 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
                 (\(rank), \(version), \(description), \(type), \(checksum), \(user), \(executionDate), \(executionTimeMilliseconds), \(succeeded))
             """
 
-        try await execute(query)
+        do {
+            try await execute(query)
+        } catch let error as PSQLError {
+            logger.error("Failed to record migration in schema history.")
+            throw error
+        } catch {
+            logger.error("Failed to record migration in schema history.", error: error)
+            throw error
+        }
     }
 
     // MARK: - Execute
 
     public func execute(_ sqlScript: String) async throws {
-        try await execute(PostgresQuery(unsafeSQL: sqlScript))
+        do {
+            try await execute(PostgresQuery(unsafeSQL: sqlScript))
+        } catch let error as PSQLError {
+            logger.error("Failed to execute migration SQL.")
+            throw error
+        } catch {
+            logger.error("Failed to execute migration SQL.", error: error)
+            throw error
+        }
     }
 
     private func execute(_ query: PostgresQuery) async throws {
@@ -171,7 +232,15 @@ public struct PostgresMigrationTarget: MigrationTarget, Sendable {
                     let setSearchPath: PostgresQuery = """
                         SET LOCAL search_path TO \(unescaped: #""\#(Self.escapedIdentifier(schema))""#), "$user", public
                         """
-                    try await connection.query(setSearchPath, logger: logger)
+                    do {
+                        try await connection.query(setSearchPath, logger: logger)
+                    } catch let error as PSQLError {
+                        logger.error("Failed to set search_path for migration transaction.")
+                        throw error
+                    } catch {
+                        logger.error("Failed to set search_path for migration transaction.", error: error)
+                        throw error
+                    }
                 }
                 try await Self.$currentConnection.withValue(connection, operation: body)
             }

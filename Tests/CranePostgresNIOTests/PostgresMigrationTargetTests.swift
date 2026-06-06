@@ -14,6 +14,8 @@
 import Crane
 import CranePostgresNIO
 import Foundation
+import InMemoryLogging
+import Logging
 import PostgresNIO
 import Testing
 
@@ -771,6 +773,147 @@ import Configuration
 
                 let recorded = await events.entries
                 #expect(recorded == ["A acquired", "A released", "B acquired"])
+            }
+        }
+
+        // Logger is filtered to `.error` so each test can assert against the full
+        // `logHandler.entries` list with `==`. PSQLError must not be attached via
+        // swift-log's `error:` parameter — its description redacts bind parameters
+        // and `String(reflecting:)` exposes them, either of which would leak into
+        // host observability pipelines. The `Entry(level:message:metadata:)` init
+        // defaults `error` to nil; the suite's exhaustive equality therefore also
+        // verifies the redaction discipline at every throw site.
+        @Suite struct Logging {
+            let db: TemporaryDatabase
+            let logHandler = InMemoryLogHandler()
+            let logger: Logger
+
+            init() throws {
+                db = try #require(TemporaryDatabase.current)
+                var logger = Logger(label: "Postgres Migration Target Tests")
+                logger.handler = logHandler
+                logger.logLevel = .error
+                self.logger = logger
+            }
+
+            private func makeTarget(schema: String? = nil) -> PostgresMigrationTarget {
+                PostgresMigrationTarget(
+                    host: db.configuration.host,
+                    port: db.configuration.port,
+                    username: db.configuration.username,
+                    password: db.configuration.password,
+                    database: db.name,
+                    schema: schema,
+                    logger: logger
+                )
+            }
+
+            @Test func `Logs an error when setting up the history table fails`() async throws {
+                let target = makeTarget(schema: "does_not_exist")
+
+                await withTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    await #expect(throws: PSQLError.self) {
+                        try await target.setUpHistory()
+                    }
+
+                    group.cancelAll()
+                }
+
+                #expect(
+                    logHandler.entries == [
+                        InMemoryLogHandler.Entry(
+                            level: .error,
+                            message: "Failed to set up schema history table.",
+                            metadata: [:]
+                        )
+                    ]
+                )
+            }
+
+            @Test func `Logs an error when loading history fails`() async throws {
+                let target = makeTarget()
+
+                await withTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    await #expect(throws: PSQLError.self) {
+                        _ = try await target.history()
+                    }
+
+                    group.cancelAll()
+                }
+
+                #expect(
+                    logHandler.entries == [
+                        InMemoryLogHandler.Entry(
+                            level: .error,
+                            message: "Failed to load schema history.",
+                            metadata: [:]
+                        )
+                    ]
+                )
+            }
+
+            @Test func `Logs an error when recording a migration fails`() async throws {
+                let target = makeTarget()
+
+                await withTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    await #expect(throws: PSQLError.self) {
+                        try await target.record(
+                            SchemaHistoryRow(
+                                rank: 1,
+                                version: 1,
+                                description: "x",
+                                type: .apply,
+                                checksum: "x",
+                                user: "u",
+                                executionDate: Date(timeIntervalSince1970: 0),
+                                duration: .milliseconds(1),
+                                succeeded: true
+                            )
+                        )
+                    }
+
+                    group.cancelAll()
+                }
+
+                #expect(
+                    logHandler.entries == [
+                        InMemoryLogHandler.Entry(
+                            level: .error,
+                            message: "Failed to record migration in schema history.",
+                            metadata: [:]
+                        )
+                    ]
+                )
+            }
+
+            @Test func `Logs an error when executing SQL fails`() async throws {
+                let target = makeTarget()
+
+                await withTaskGroup { group in
+                    group.addTask { await target.run() }
+
+                    await #expect(throws: PSQLError.self) {
+                        try await target.execute("NOT VALID SQL;")
+                    }
+
+                    group.cancelAll()
+                }
+
+                #expect(
+                    logHandler.entries == [
+                        InMemoryLogHandler.Entry(
+                            level: .error,
+                            message: "Failed to execute migration SQL.",
+                            metadata: [:]
+                        )
+                    ]
+                )
             }
         }
 
