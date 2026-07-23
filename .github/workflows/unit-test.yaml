@@ -47,7 +47,7 @@ jobs:
       - name: Swift version
         run: swift --version
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Build / Test
         run: swift test --parallel --enable-all-traits --enable-code-coverage --xunit-output junit.xml
       - name: Merge code coverage
@@ -114,7 +114,7 @@ jobs:
           createuser --superuser crane
           createdb -U crane crane
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Build / Test
         run: swift test --parallel --enable-all-traits --enable-code-coverage --xunit-output junit.xml
       - name: Merge code coverage
